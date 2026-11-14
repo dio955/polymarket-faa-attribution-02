@@ -7,14 +7,15 @@
 // baseline uses one fixed spread (sigma 0.0025 per sqrt-minute) for every
 // market, but the markets' real per-minute volatilities differ by an order
 // of magnitude — most are quiet, a few jump. So each market gets its own
-// sigma, the realised volatility of its 1-minute price changes over the
-// last 120 minutes, floored at 0.0005 and capped at 0.005. The median stays
-// at the last price: mean reversion and drift were both tested and made the
-// loss worse, so the median is plain persistence.
+// sigma, the average of the realised volatilities of its 1-minute and
+// its 5-minute price changes over the last 120 minutes (the average is
+// less noisy than either alone), floored at 0.0005 and capped at 0.005.
+// The median stays at the last price: mean reversion and drift were both
+// tested and made the loss worse, so the median is plain persistence.
 //
 // Backtest (pinball loss, p00-p04, 104 market-cases): baseline 0.392518,
-// this model 0.309962 — about 21% better, and better in every single case
-// (p00 +12%, p01 +18%, p02 +18%, p03 +24%, p04 +30%). The spread adapts
+// this model 0.308710 — about 21% better, and better in every single case
+// (p00 +15%, p01 +18%, p02 +17%, p03 +27%, p04 +31%). The spread adapts
 // to each market's current volatility, so if the FAA final's markets are
 // jumpier than the NVIDIA practice's, the realised vol rises and the
 // spread widens on its own; the cap keeps it from blowing out.
@@ -63,23 +64,39 @@ interface Case {
 const price6 = (x: number): number => Math.round(Math.min(1, Math.max(0, x)) * 1e6) / 1e6 + 0;
 
 /**
- * A market's per-minute sigma: the standard deviation of its 1-minute
- * price changes over the last VOL_WINDOW minutes, floored and capped.
- * A market with fewer than 2 prices takes the floor.
+ * A market's per-minute sigma: the average of two estimates of the
+ * standard deviation of its price changes over the last VOL_WINDOW
+ * minutes — the 1-minute changes and the 5-minute changes scaled to
+ * per-minute. Averaging the two makes the estimate less noisy than
+ * either alone (the 1-minute read carries bid-ask bounce, the 5-minute
+ * read fewer samples). Floored and capped. A market with fewer than
+ * 2 prices takes the floor.
  */
 function marketSigma(prices: number[]): number {
   const n = prices.length;
   if (n < 2) return SIGMA_FLOOR;
   const w = Math.min(VOL_WINDOW, n - 1);
-  let s = 0;
-  let s2 = 0;
+  let s1 = 0;
+  let s21 = 0;
   for (let i = n - w; i < n; i += 1) {
     const d = (prices[i] as number) - (prices[i - 1] as number);
-    s += d;
-    s2 += d * d;
+    s1 += d;
+    s21 += d * d;
   }
-  const m = s / w;
-  const sigma = Math.sqrt(Math.max(0, s2 / w - m * m));
+  const m1 = s1 / w;
+  const sigma1 = Math.sqrt(Math.max(0, s21 / w - m1 * m1));
+  let s5 = 0;
+  let s25 = 0;
+  let c5 = 0;
+  for (let i = n - w; i < n; i += 5) {
+    const d = (prices[i] as number) - (prices[Math.max(0, i - 5)] as number);
+    s5 += d;
+    s25 += d * d;
+    c5 += 1;
+  }
+  const m5 = s5 / c5;
+  const sigma5 = Math.sqrt(Math.max(0, s25 / c5 - m5 * m5)) / Math.sqrt(5);
+  const sigma = (sigma1 + sigma5) / 2;
   return Math.min(SIGMA_CAP, Math.max(SIGMA_FLOOR, sigma));
 }
 
